@@ -5,13 +5,14 @@
 @Time: 2022/8/4
 """
 import functools
+import logging
+import os
 import pickle
 import random
 import time
 import traceback
 from concurrent import futures
 
-from yyxx_game_pkg.logger.log import root_log
 from yyxx_game_pkg.xtrace.helper import get_current_trace_id
 
 
@@ -47,7 +48,7 @@ def log_execute_time_monitor(exec_lmt_time=20):
                 for k, _v in kwargs.items():
                     kwargs[k] = fix_str(_v, 100)
                 trace_id = get_current_trace_id()
-                root_log(
+                logging.info(
                     f"<log_execute_time_monitor> trace_id: {trace_id} "
                     f"func <<{func.__name__}>> deal over time "
                     f"begin_at: {begin_dt} end_at: {end_dt}, sec: {offset}"
@@ -70,40 +71,59 @@ def except_monitor(func):
     @functools.wraps(func)
     def inner(*args, **kwargs):
         res = None
+        # 直接抛出异常
+        is_raise = kwargs.pop("except_monitor_raise", False)
         try:
             res = func(*args, **kwargs)
         except Exception as e:
+            if is_raise:
+                raise
             _args = []
             for _arg in args:
                 _args.append(fix_str(_arg, 100))
             for k, _v in kwargs.items():
                 kwargs[k] = fix_str(_v, 100)
-            trace_id = get_current_trace_id()
-            root_log(
-                f"<except_monitor> trace_id: {trace_id} "
-                f"func:{func.__module__}.{func.__name__}, args:{str(_args)}, kwargs:{str(kwargs)}, "
-                f"exc: {traceback.format_exc()} {e}"
+            logging.error(
+                "<except_monitor>"
+                f"exc: {traceback.format_exc()} {e}, "
+                f"func:{func.__module__}.{func.__name__}, args:{str(_args)}, kwargs:{str(kwargs)}"
             )
         return res
 
     return inner
 
 
-def except_return(default=None):
+def except_return(default=None, echo_raise=True):
     """
     # 异常后指定返回值
-    :param default: 返回值
+    :param default: 返回值(或者可执行函数)
+    :param echo_raise: 是否打印报错信息
     :return:
     """
 
     def decorator(func):
         @functools.wraps(func)
-        def wrapper(*args, **kw):
+        def wrapper(*args, **kwargs):
             try:
-                return func(*args, **kw)
+                return func(*args, **kwargs)
             except Exception as e:
-                root_log(f"{e}: exc:{traceback.format_exc()}")
-                return default
+                if echo_raise:
+                    _args = []
+                    for _arg in args:
+                        _args.append(fix_str(_arg, 100))
+                    for k, _v in kwargs.items():
+                        kwargs[k] = fix_str(_v, 100)
+                    logging.error(
+                        "<except_return>"
+                        f"exc: {traceback.format_exc()} {e}, "
+                        f"func:{func.__module__}.{func.__name__}, args:{str(_args)}, kwargs:{str(kwargs)}"
+                    )
+
+                return (
+                    default(e=e, f_args=args, f_kwargs=kwargs)
+                    if callable(default)
+                    else default
+                )
 
         return wrapper
 
@@ -127,7 +147,7 @@ def singleton_unique(cls):
 
     @functools.wraps(cls)
     def get_instance(*args, **kw):
-        unique_key = f"{cls}_{args}_{kw}"
+        unique_key = f"{os.getpid()}_{cls}_{args}_{kw}"
         if unique_key not in instances:
             instances[unique_key] = cls(*args, **kw)
         return instances[unique_key]
@@ -141,7 +161,7 @@ def singleton_unique_obj_args(cls):
 
     @functools.wraps(cls)
     def get_instance(*args, **kw):
-        unique_key = f"{cls}_{list(map(str, args))}_{kw}"
+        unique_key = f"{os.getpid()}_{cls}_{list(map(str, args))}_{kw}"
         if unique_key not in instances:
             instances[unique_key] = cls(*args, **kw)
         return instances[unique_key]
@@ -158,7 +178,7 @@ def timeout_run(timeout=2, default=None):
                 future = executor.submit(func, *args, **kw)
                 return future.result(timeout=timeout)
             except Exception as e:
-                root_log(f"timeout_run {func} error {e} args:{args} kw:{kw}")
+                logging.info(f"timeout_run {func} error {e} args:{args} kw:{kw}")
                 return default
 
         return wrapper

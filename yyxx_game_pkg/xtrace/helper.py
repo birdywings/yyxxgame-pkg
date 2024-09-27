@@ -2,6 +2,7 @@
 # @Author   : KaiShin
 # @Time     : 2023/2/28
 
+import os
 from functools import wraps
 from opentelemetry import trace
 from opentelemetry.exporter.jaeger.thrift import JaegerExporter
@@ -21,13 +22,15 @@ def get_tracer():
     return _tracer
 
 
-def register_to_jaeger(service_name: str, jaeger_host: str, jaeger_port: int = 6831):
+def register_to_jaeger(service_name: str, jaeger_host: str, jaeger_port: int = 6831,
+                       udp_split_oversized_batches: bool = True, **kwargs):
     """
     注册服务到jaeger，这样就可以发送tracer相关信息到jaeger服务器
     Args:
         service_name:  注册的服务明
         jaeger_host:   jaeger地址
-        jaeger_port:
+        jaeger_port:   The port of the Jaeger-Agent.
+        udp_split_oversized_batches: Re-emit oversized batches in smaller chunks.
 
     Returns: TracerProvider
 
@@ -39,6 +42,7 @@ def register_to_jaeger(service_name: str, jaeger_host: str, jaeger_port: int = 6
     jaeger_exporter = JaegerExporter(
         agent_host_name=jaeger_host,
         agent_port=jaeger_port,
+        udp_split_oversized_batches=udp_split_oversized_batches
     )
 
     # Create a BatchSpanProcessor and add the exporter to it
@@ -47,8 +51,15 @@ def register_to_jaeger(service_name: str, jaeger_host: str, jaeger_port: int = 6
     # add to the tracer
     trace.get_tracer_provider().add_span_processor(span_processor)
 
+    set_jaeger_environ(**kwargs)
 
-def trace_span(ret_trace_id: bool = False, set_attributes: bool = False, operation_name: str = ""):
+
+def default_attributes_func(*args, **kwargs) -> dict:
+    return {"kwargs": str(kwargs), "args": str(args)}
+
+
+def trace_span(ret_trace_id: bool = False, set_attributes: bool = False, operation_name: str = "",
+               get_attributes_func=default_attributes_func):
     """:cvar
     函数的span装饰器
     """
@@ -65,7 +76,8 @@ def trace_span(ret_trace_id: bool = False, set_attributes: bool = False, operati
                     if ret_trace_id:
                         return result, hex(span.get_span_context().trace_id)
                     if set_attributes:
-                        span.set_attributes({"kwargs": str(kwargs), "args": str(args)})
+                        attributes = get_attributes_func(*args, **kwargs)
+                        span.set_attributes(attributes)
                     return result
                 except Exception as e:
                     span.set_status(Status(StatusCode.ERROR, str(e)))
@@ -103,3 +115,26 @@ def add_span_events(event_name: str, events: dict):
     """
     span = get_current_span()
     span.add_event(event_name, events)
+
+
+def get_trace_parent():
+    span = trace.get_current_span()
+    span_context = span.get_span_context()
+    if span_context == trace.INVALID_SPAN_CONTEXT:
+        return {}
+    trace_id = trace.format_trace_id(span_context.trace_id)
+    trace_parent_string = f"00-{trace_id}-{trace.format_span_id(span_context.span_id)}-{span_context.trace_flags:02x}"
+    return {
+        "trace_id": trace_id,
+        "trace_parent_string": trace_parent_string,
+    }
+
+
+def set_jaeger_environ(**kwargs):
+    jaeger_web_url = kwargs.get('jaeger_web_url', '')
+    if jaeger_web_url and not os.environ.get('JAEGER_WEB_URL'):
+        os.environ['JAEGER_WEB_URL'] = jaeger_web_url
+    jaeger_web_url_levels = kwargs.get('jaeger_web_url_levels', '')
+    if jaeger_web_url_levels and not os.environ.get('JAEGER_WEB_URL_LEVELS'):
+        os.environ['JAEGER_WEB_URL_LEVELS'] = ','.join(jaeger_web_url_levels) if isinstance(
+            jaeger_web_url_levels, list) else jaeger_web_url_levels
